@@ -1,0 +1,374 @@
+---
+title: "Covid Trial Design Modification Simulations (C163)"
+author: "ADCS Biostatistics Core"
+date: "`r Sys.Date()`"
+fontsize: 11pt
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    highlight: tango
+    keep_tex: true 
+    includes:
+      in_header: "/Users/zenn/prj/ADCSpreamble.tex"
+header-includes:
+  - \rhead{C163 project. COVID Design report (draft)}
+bibliography: /Users/zenn/shr/library.bib
+latex_engine: xelatex
+---
+
+\lhead{COVID Design Modifications Analysis}
+\rhead{\thepage} 
+\listoffigures
+\listoftables
+
+```{r  include=FALSE}
+options(dplyr.summarise.inform = FALSE, dplyr.print_max = 1e9)
+library(pacman)
+p_load(purrr, ztable, patchwork,ggthemes,  
+  kableExtra, showtext, skimr, broom.mixed, lme4, lsmeans, lubridate, rsample,
+  tidyverse, knitr, broom, nlme, purrr, tidyr
+)
+
+pd <- position_dodge(.20)
+opts_chunk$set(
+  warning = F, message = F, echo = F, fig.width = 4.2,
+  fig.height = 4, results = "asis", dev = "pdf",
+  opts_chunk$set(cache.path = "cache/")
+)
+source("~/shr/zz.tools.R")
+source("c163_fns.R")
+
+options(scipen = 1, digits = 2, warn = -1, ztable.type = "latex")
+showtext_auto()
+# aa = font_files()    
+# grep(aa$family, "School")
+#syntax:font_add(family ="<family_name>",regular="/pth/to/font/file")
+font_add("Montserrat", "Montserrat-Regular.otf")
+font_add("Montserrat Thin", "Montserrat-Thin.otf")
+font_families()
+myfont1 = "Montserrat"
+myfont2 = "Montserrat Thin"
+```
+
+
+\input{"/Users/zenn/shr/zz.tools.tex"}
+
+
+# Introduction
+
+\input{intro.txt}
+
+```{r cache=F}
+seed = 47
+set.seed(seed)
+```
+
+# Methods
+
+Analyses were based on ADAS 11 data from 641 patients/completers from the
+pooled data sets for the ADCS Homocystine and Lipid-Lowering trials. 
+
+Given target sample size, say N, and effect size (mean change score
+difference at 12 months), say delta, and
+pooled standard deviation, s,  individual profiles were selected at
+random from the pool per the following algorithm: 
+
+1. least squares slopes were computed for each profile. 
+
+2. the set of 641 slopes were ordered from smallest to largest. 
+
+3. A set, N/2, of "placebo" group slopes was selected at random
+without replacement using sampling weights biased toward larger
+slopes, (see figure 1). 
+
+4. A second set of N/2 "active" slopes were selected in a similar
+manner using sampling weights biased toward smaller slopes. 
+
+
+5. A dropout process was applied to the resulting data set of size N;
+30\% of subjects were randomly selected and 50\% of those were assumed
+to drop after 6 months of followup and 50\% before 6 months of followup. 
+
+6. A COVID19 pause process was applied, one of three, (see figure 2),
+filtering the dataset per the anticipated loss (or delay) of subject
+visit information. 
+
+7. For each combined and filtered (both dropout and pause scenario)
+sample calculate the observed delta at 12 months, and the pooled
+standard deviation, s. and compare to defined tolerance (specified at
+.05 for delta and .2 for s)  
+
+8. Repeat steps 3 through 7 until delta and s are within tolerance. 
+
+7. Repeat steps 3 through 8 until four data sets matching criteria are
+determined. 
+
+9.  Repeat overall process for multiple values of N and delta. 7. For
+this experiment assume a dropout process impacting 30\% of subjects
+and a fixed target s of 6.0.
+
+For each of the parameter profiles and under three different COVID19
+trial pause scenarios, matching data sets were in turn submitted
+to a bootstrap analysis with 1000 replicates to determine the power of
+three statistical testing procedures, .   
+
+The bootstrap process entails resampling the dataset multiple times
+without replacement, calculating the three test statistics and their
+associated p-values. The proportion of p-values less than 0.05 over the 1000
+replicates is an estimate of the power of the test. 
+
+
+
+```{r  eval=T, cache=F}
+source("~/prj/c163/c163_preprocess.R")
+dat1 <- dat1 %>%
+  fil(!trial == "dha") %>%
+  sel(-arm, -trial)
+
+```
+
+```{r  eval=T, cache=T, child="c163_viz.Rmd"}
+```
+
+
+```{r include=F, cache=F}
+
+output_dir <- file.path(".", "data")
+if (!dir.exists(output_dir)){
+dir.create(output_dir) } 
+
+tdelta <- c(2.0, 2.6, 3.0, 4.0)
+tsize <- c(320, 360, 400)
+filtervar <- c("filter0","filter1", "filter2", "filter3")
+vers <- 1:20
+
+params <- expand.grid(tsize, tdelta, vers, filtervar) %>%
+  setNames(c("tsize", "tdelta", "vers", "filtervar")) %>%
+  mutate(filtervar = as.character(filtervar)) 
+
+ff <- function(x) {
+  pmap(x, function(tsize, tdelta, vers, filtervar) {
+    gendata(tsize, tdelta, vers, filtervar)
+  })
+}
+#gendata(tsize=320, tdelta=3.0, vers=5, filtervar="filter0")
+#gendata(tsize=360, tdelta=4.0, vers=5, filtervar="filter0")
+#gendata(tsize=400, tdelta=2.0, vers=5, filtervar="filter0")
+
+
+#params %>% ff
+
+sims <- data.frame(
+  test = character(0), power = numeric(0), tsize = numeric(0),
+  delta = numeric(0), reps = numeric(0), scenario = numeric(0), vers = numeric(0)
+)
+
+output_dir <- file.path(".", "sim_results")
+if (!dir.exists(output_dir)){
+dir.create(output_dir)
+} 
+
+#write_csv(sims, "sim_results/sim.csv", append = F)
+
+reps <- 10
+
+fnames <- list.files("./data", "^dat_n") 
+fnames2 <- fnames %>%
+  map_dfr(., function(x) {
+    strsplit(x, "\\D") %>%
+      unlist() %>%
+      setNames(letters[1:15])
+  }) %>%
+  sel(tsize = f, tdelta = h, scenario = j, vers = l) %>%
+  cbind(fname = fnames, reps = reps, .)
+
+ff <- function(x) {
+  pmap(x, function(fname, reps, tsize, tdelta, scenario, vers) {
+    boots(fname, reps, tsize, tdelta, scenario, vers)
+  })
+}
+
+
+fnames2 = slice(fnames2,c(6,12,14))
+
+
+fnames2 %>% ff
+
+results <- read.csv("sim_results/sim.csv")
+results <- read.csv("sim_results/sim_archive/sim_2020-08-06-0854.csv")
+#results1 <- read.csv("sim_results/sim_2020-08-03-1810.csv")
+#results2 <- read.csv("sim_results/sim_2020-07-31-1646.csv")
+#results3 <- read.csv("sim_results/sim_2020-08-01-0944.csv")
+#results4 <- read.csv("sim_results/sim_2020-08-04-0844.csv")
+
+#resultssum <- rbind(results,results1, results2, results3,  results4) %>%
+
+resultssum <- rbind(results) %>%
+	#   fil(!test == "ztest")  %>%  
+	#   fil(delta %in% c(20,26,30,40))  %>%  
+  group_by(test, tsize, delta, scenario) %>%
+  summ(n = n(), treps = sum(reps), pow = median(power), se=sd(power)/(n^.5)) %>%
+  mut(
+    ci_low = pow - 1.96 * ((pow * (1 - pow) / treps)^.5),
+    ci_low2 = pow - 1.96 * se,
+    ci_upper = pow + 1.96 * ((pow * (1 - pow) / treps)^.5),
+    ci_upper2 = pow + 1.96 * se  ) %>%
+  mut(
+    scenario = as.character(scenario),
+    test = recode(test, "lme_cat" = "lme-cat", "lme_slp" = "lme-slp")
+  )
+   
+```
+
+\newpage
+
+# Simulation Results
+
+
+
+```{r eval=T, cache=F, fig.width=6.2, fig.height=8 }
+
+options(digits = 6)
+resultssum %>%
+  mut(delta = delta / 10, conf_int = paste0("(", round(ci_low, 3), ", ", round(ci_upper, 3), ")")) %>%
+  sel(test, scenario, tsize, delta, pow, conf_int) %>%
+  plyr::arrange(test, scenario, tsize, delta) %>%
+  setNames(gsub("_", "-", names(.))) %>%
+  kable("latex", digits = 5, escape = F, booktab = T, longtable = T) %>%
+  kable_styling(latex_options = "striped") %>%
+  row_spec(0, angle = -60) %>%
+  row_spec(c(6, 12), hline_after = T)
+# 
+#  %>%
+#   column_spec(5, bold = T) 
+cat("\n \\captionof{table}{Simulation results}\\vspace{1in}\n")
+
+cbPalette <- c("#000000","#9900bb","#35bb00", "#0061bb", "#bb0000")
+#gg = ggplot(data = resultssum, aes(x = delta / 10, y = pow, group=test)) +
+  #geom_point(shape = 1, alpha=.5) +
+ #theme_bw(base_family = myfont1) +
+  #xlim(1, 5) +
+  #facet_grid(scenario ~ tsize, labeller = label_both) +
+  #geom_errorbar(aes(ymin = ci_low, ymax = ci_upper), width = 0.2, color = "black", alpha = .3) +
+  #geom_hline(yintercept = 0.8, color = "red", alpha = .5, size = .3) +
+  #geom_vline(xintercept = 2.6, color = "red", linetype = 6, alpha = .5, size = .3) +
+  #xlab("Delta at 12 months, completers") +
+  #theme(strip.text = element_text(size = 5)) +
+  #theme(axis.text.y = element_text(size = 5)) +
+  #scale_color_manual(values=cbPalette)+
+  #scale_y_continuous(breaks = seq(0, 1, .2))+ 
+     #geom_smooth(method = "glm", method.args = list(family = binomial(link = "probit") ), 
+                 #aes(weight = 1000, color = "probit smooth"), se = F, size=.5 ) 
+ #ggsave("delta.pdf")
+
+tsize <- c(320,360, 400)
+delta <- c(2, 2.6, 3, 4)
+powers <- expand.grid( tsize,  delta) %>% setNames(c( "tsize",  "delta"))
+ff <- function(x) {
+  pmap_dbl(x, function( tsize, delta) {
+    power.t.test(n = .7 * tsize / 2, delta = delta, sd = 6, sig.level = .01)$power
+  }) }
+
+powers <- powers %>%
+  mut(pow = powers %>% ff()) %>%
+  mut(delta = as.numeric(delta)) %>% mut(tsize=as.integer(tsize))  %>% mut( 
+scenario = "orig", test="orig", delta = 10*delta)
+
+powers1 = powers %>%  mut(test="lme-cat")
+powers2 = powers %>%  mut(test="lme-slp")
+powers3 = powers %>%  mut(scenario="1")
+powers4 = powers %>%  mut(scenario="2")
+powers5 = powers %>%  mut(scenario="3")
+powers6 = powers %>%  mut(scenario="0")
+resultssum2 = resultssum %>%  full_join(powers1) %>% full_join(powers2) 
+resultssum3 = resultssum %>%  full_join(powers3) %>% full_join(powers4)  %>%  
+full_join(powers5) %>% full_join(powers6) 
+
+
+write.csv(resultssum3, "symptomatic_pow.csv")
+
+
+
+
+cbPalette <- c("#35bb00", "#0061bb", "#bb0000")
+gg <- ggplot(data = resultssum3, aes(x = delta / 10, y = pow, group = test, color = test)) +
+ geom_point(alpha = .5) +
+ facet_grid(scenario ~ tsize, labeller = label_both) +
+ xlim(1, 5) +
+ geom_hline(yintercept = 0.8, color = "red", alpha = .5, size = .3) +
+ geom_vline(xintercept = 2.6, color = "red", linetype = 6, alpha = .5, size = .3) +
+ xlab("Effect Size") +
+ theme_bw(base_family = myfont1) +
+ theme(strip.text = element_text(size = 5)) +
+ theme(axis.text.y = element_text(size = 5)) 
+# +
+#   scale_color_manual(values=cbPalette)+
+#  scale_y_continuous(breaks = seq(0, 1, .2))
+# +
+ #      geom_smooth(method = "glm", method.args = list(family = binomial(link = "probit") ), 
+ #                  aes(weight = 1000, color = test), se = F, size=.5) 
+ ggsave("deltatest.pdf")
+
+cbPalette <- c("#000000","#9900bb","#35bb00", "#0061bb", "#bb0000")
+gg  <- ggplot(data = resultssum2, aes(x = delta / 10, y = pow, group = scenario, color = scenario)) +
+geom_point(alpha=.2, position=pd) +
+geom_errorbar(aes(ymin=ci_low2, ymax=ci_upper2),width = 0.1, alpha=.3, position=pd)+
+ facet_grid(test ~ tsize, labeller = label_both) +
+ xlim(1, 5) +
+ geom_hline(yintercept = 0.8, color = "red", alpha = .5, size = .3) +
+ geom_vline(xintercept = 2.6, color = "red", linetype = 6, alpha = .5, size = .3) +
+ xlab("Effect Size") +
+ theme_bw(base_family = myfont1) +
+ theme(strip.text = element_text(size = 5)) +
+ theme(axis.text.y = element_text(size = 5)) +
+  scale_color_manual(values=cbPalette)+
+ scale_y_continuous(breaks = seq(0, 1, .2))+
+ geom_smooth(method = "glm", method.args = list(family = binomial(link = "probit") ), 
+                 aes(weight = 1000, color = scenario), se = F, size=.5, position=pd) 
+ ggsave("deltascenario.pdf")
+
+dat4 = resultssum3
+dat4 = dat4  %>%  sel(Power =pow, N = tsize, everything()) %>% mut(effect = delta/10, test = recode(test, "ztest" = "ttest")) 
+yy = ggplot(data = dat4, aes(x = effect, y = Power, group = test, color = test)) +
+  geom_point(shape = 16, size = 1.15) +
+  facet_grid(scenario ~ N, labeller = label_both) +
+  theme_bw() +
+  geom_hline(yintercept = 0.8, color = "red", alpha = .5, size = .3) +
+  geom_vline(xintercept = 2.6, color = "red", linetype = 6, alpha = .5, size = .3) +
+  xlab("aDAS-cog") +
+  theme(strip.text = element_text(size = 10)) +
+  theme(axis.text.y = element_text(size = 10)) +
+  scale_y_continuous(breaks = seq(0, 1, .2)) +
+  scale_x_continuous(limits=c(1.5, 3),breaks = seq(1.0, 3, .5)) +
+  scale_color_manual(values=c('red','purple','blue','green')) +
+  stat_smooth(method="glm", method.args=list(family=binomial(link="probit")), se=F, size = 0.75)
+
+ ggsave("yy3.pdf", width=9, height=12)
+
+```
+
+\includegraphics{deltatest.pdf}
+\captionof{figure}{Simulation results - by sample size and scenario - 
+two mmrm tests per facet: lme-cat (categor. time), lme-slp (cont. time), 
+also original t-test calc added to each plot}\vspace{1in}
+\includegraphics{deltascenario.pdf}
+\captionof{figure}{Simulation results. Smoothed inverse probit curves.
+bootstrap point estimates and 95\% confidence intervals - by sample size and test - four
+scenarios per facet, also for reference original t-test calc 'orig' added to each plot. }\vspace{1in}
+\newpage
+```
+
+# Appendix
+
+```{r eval=T, child="demog.Rmd"}
+```
+<!--```{r eval=T, child="appendix.Rmd"}-->
+<!--```-->
+
+
+\appendix
+
+\section{Full-size images}
+
+\unvbox\savedimgs
